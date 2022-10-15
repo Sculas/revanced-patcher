@@ -2,7 +2,6 @@ package app.revanced.patcher
 
 import app.revanced.patcher.apk.SplitApkFile
 import app.revanced.patcher.logging.Logger
-import app.revanced.patcher.logging.impl.NopLogger
 
 /**
  * Options for the [Patcher].
@@ -17,5 +16,5 @@ data class PatcherOptions(
     internal val resourceCacheDirectory: String,
     internal val aaptPath: String = "",
     internal val frameworkPath: String? = null,
-    internal val logger: Logger = NopLogger
+    internal val logger: Logger = Logger.Nop
 )

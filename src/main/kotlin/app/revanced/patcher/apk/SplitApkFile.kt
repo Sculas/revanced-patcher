@@ -15,8 +15,8 @@ data class SplitApkFile(val base: Apk.Base, val splits: List<Apk.Split> = emptyL
      * @param options The [PatcherOptions] to compile the resources with.
      */
     internal fun compileResources(options: PatcherOptions) {
-        base.compileResources(options)
-        splits.forEach { it.compileResources(options) }
+        base.writeResources(options)
+        splits.forEach { it.writeResources(options) }
     }
 
     /**

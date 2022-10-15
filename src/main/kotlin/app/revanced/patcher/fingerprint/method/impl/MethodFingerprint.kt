@@ -287,7 +287,7 @@ data class MethodFingerprintResult(
      * Use [classDef] where possible.
      */
     @Suppress("MemberVisibilityCanBePrivate")
-    val mutableClass by lazy { context.proxy(classDef).mutableClass }
+    val mutableClass by lazy { context.classes.proxy(classDef).mutableClass }
 
     /**
      * Returns a mutable clone of [method]

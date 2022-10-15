@@ -1,8 +1,7 @@
 package app.revanced.patcher
 
-import app.revanced.patcher.util.ProxyBackedClassList
+import app.revanced.patcher.apk.Apk
 import app.revanced.patcher.util.method.MethodWalker
-import org.jf.dexlib2.iface.ClassDef
 import org.jf.dexlib2.iface.Method
 import org.w3c.dom.Document
 import java.io.Closeable
@@ -20,67 +19,85 @@ import javax.xml.transform.stream.StreamResult
 
 sealed interface Context
 
-class BytecodeContext internal constructor(classes: MutableList<ClassDef>) : Context {
+/**
+ * A context for the bytecode of an [Apk.Base] file.
+ *
+ * @param options The [PatcherOptions] of the [Patcher].
+ */
+class BytecodeContext internal constructor(options: PatcherOptions) : Context {
     /**
      * The list of classes.
      */
-    val classes = ProxyBackedClassList(classes)
+    val classes = options.inputFiles.base.bytecodeData.classes
 
     /**
-     * Find a class by a given class name.
+     * Create a [MethodWalker] instance for the current [BytecodeContext].
      *
-     * @param className The name of the class.
-     * @return A proxy for the first class that matches the class name.
+     * @param startMethod The method to start at.
+     * @return A [MethodWalker] instance.
      */
-    fun findClass(className: String) = findClass { it.type.contains(className) }
-
-    /**
-     * Find a class by a given predicate.
-     *
-     * @param predicate A predicate to match the class.
-     * @return A proxy for the first class that matches the predicate.
-     */
-    fun findClass(predicate: (ClassDef) -> Boolean) =
-        // if we already proxied the class matching the predicate...
-        classes.proxies.firstOrNull { predicate(it.immutableClass) } ?:
-        // else resolve the class to a proxy and return it, if the predicate is matching a class
-        classes.find(predicate)?.let { proxy(it) }
-
-    fun proxy(classDef: ClassDef): app.revanced.patcher.util.proxy.ClassProxy {
-        var proxy = this.classes.proxies.find { it.immutableClass.type == classDef.type }
-        if (proxy == null) {
-            proxy = app.revanced.patcher.util.proxy.ClassProxy(classDef)
-            this.classes.add(proxy)
-        }
-        return proxy
+    fun toMethodWalker(startMethod: Method): MethodWalker {
+        return MethodWalker(this, startMethod)
     }
 }
 
 /**
- * Create a [MethodWalker] instance for the current [BytecodeContext].
+ * A context for [Apk] file resources.
  *
- * @param startMethod The method to start at.
- * @return A [MethodWalker] instance.
+ * @param options The [PatcherOptions] of the [Patcher].
  */
-fun BytecodeContext.toMethodWalker(startMethod: Method): MethodWalker {
-    return MethodWalker(this, startMethod)
-}
+class ResourceContext internal constructor(options: PatcherOptions) : Context {
+    private val resourceCacheDirectory = File(options.resourceCacheDirectory)
 
-class ResourceContext internal constructor(private val resourceCacheDirectory: File) : Context, Iterable<File> {
-    val xmlEditor = XmlFileHolder()
+    /**
+     * Get a file from the resources of an [Apk] file.
+     *
+     * @param path The path of the resource file.
+     * @param context The [Apk] file context to get the resource file in.
+     * @return A [File] instance for the resource file.
+     */
+    fun getFile(path: String, context: ApkContext = ApkContext.BASE) =
+        context.resolve(resourceCacheDirectory).resolve(path)
 
-    operator fun get(path: String) = resourceCacheDirectory.resolve(path)
+    /**
+     * Get a file from the resources of an [Apk] file with [context] or if it does not exist in [context] from [orContext].
+     *
+     * @param path The path of the resource file.
+     * @param context The [Apk] file context to get the resource file in.
+     * @param orContext The [Apk] file context to get the resource file in if it could not be found in the previous [context].
+     * @return A [File] instance for the resource file.
+     */
+    fun getFileOr(path: String, context: ApkContext = ApkContext.BASE, orContext: ApkContext = ApkContext.ASSET) =
+        getFile(path, context).takeIf { it.exists() } ?: getFile(path, orContext)
 
-    override fun iterator() = resourceCacheDirectory.walkTopDown().iterator()
+    /**
+     * Open an [DomFileEditor] for a given DOM file.
+     *
+     * @param inputStream The input stream to read the DOM file from.
+     * @return A [DomFileEditor] instance.
+     */
+    fun openEditor(inputStream: InputStream) = DomFileEditor(inputStream)
 
-    inner class XmlFileHolder {
-        operator fun get(inputStream: InputStream) =
-            DomFileEditor(inputStream)
+    /**
+     * Open an [DomFileEditor] for a given DOM file.
+     *
+     * @param path The path to the DOM file.
+     * @return A [DomFileEditor] instance.
+     */
+    fun openEditor(path: String, context: ApkContext = ApkContext.BASE) =
+        DomFileEditor(this@ResourceContext.getFile(path, context))
 
-        operator fun get(path: String): DomFileEditor {
-            return DomFileEditor(this@ResourceContext[path])
-        }
+    /**
+     * Enum to get the resource file in context to [Apk] files.
+     */
 
+    enum class ApkContext(private val path: String) {
+        BASE(Apk.Base.NAME),
+        LIBRARY(Apk.Split.Library.NAME),
+        ASSET(Apk.Split.Asset.NAME),
+        LANGUAGE(Apk.Split.Language.NAME);
+
+        internal fun resolve(root: File) = root.resolve(this.path)
     }
 }
 
@@ -112,7 +129,7 @@ class DomFileEditor internal constructor(
     // lazily open an output stream
     // this is required because when constructing a DomFileEditor the output stream is created along with the input stream, which is not allowed
     // the workaround is to lazily create the output stream. This way it would be used after the input stream is closed, which happens in the constructor
-    constructor(file: File) : this(file.inputStream(), lazy { file.outputStream() }) {
+    internal constructor(file: File) : this(file.inputStream(), lazy { file.outputStream() }) {
         // increase the lock
         locks.merge(file.path, 1, Integer::sum)
         filePath = file.path
@@ -153,7 +170,6 @@ class DomFileEditor internal constructor(
 
         closed = true
     }
-
     private companion object {
         // map of concurrent open files
         val locks = mutableMapOf<String, Int>()

@@ -41,7 +41,7 @@ class MethodWalker internal constructor(
             val instruction = instructions.elementAt(offset)
 
             val newMethod = (instruction as ReferenceInstruction).reference as MethodReference
-            val proxy = bytecodeContext.findClass(newMethod.definingClass)!!
+            val proxy = bytecodeContext.classes.findClassProxied(newMethod.definingClass)!!
 
             val methods = if (walkMutable) proxy.mutableClass.methods else proxy.immutableClass.methods
             currentMethod = methods.first { it ->

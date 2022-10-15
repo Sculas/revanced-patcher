@@ -7,13 +7,8 @@ import app.revanced.patcher.extensions.PatchExtensions.patchName
 import app.revanced.patcher.fingerprint.method.impl.MethodFingerprint.Companion.resolve
 import app.revanced.patcher.patch.*
 import app.revanced.patcher.util.VersionReader
-import brut.directory.ExtFile
 import lanchon.multidexlib2.BasicDexFileNamer
-import lanchon.multidexlib2.DexIO
 import lanchon.multidexlib2.MultiDexIO
-import org.jf.dexlib2.Opcodes
-import org.jf.dexlib2.iface.DexFile
-import org.jf.dexlib2.writer.io.MemoryDataStore
 import java.io.File
 
 /**
@@ -21,16 +16,13 @@ import java.io.File
  * @param options The options for the patcher.
  */
 class Patcher(private val options: PatcherOptions) {
-    val context: PatcherContext
-
+    private val context = PatcherContext()
     private val logger = options.logger
-    private val opcodes: Opcodes
-
-    private var resourceDecodingMode = Apk.ResourceDecodingMode.MANIFEST_ONLY
+    private var decodingMode = Apk.ResourceDecodingMode.MANIFEST_ONLY
 
     companion object {
         @Suppress("SpellCheckingInspection")
-        private val dexFileNamer = BasicDexFileNamer()
+        internal val dexFileNamer = BasicDexFileNamer()
 
         /**
          * The version of the ReVanced Patcher.
@@ -40,15 +32,6 @@ class Patcher(private val options: PatcherOptions) {
     }
 
     init {
-        logger.info("Reading dex files")
-
-        // read dex files from the base apk
-        MultiDexIO.readDexFile(true, options.inputFiles.base.file, dexFileNamer, null, null).also {
-            opcodes = it.opcodes
-        }.let {
-            context = PatcherContext(it.classes.toMutableList(), File(options.resourceCacheDirectory))
-        }
-
         // decode manifest file
         logger.info("Decoding manifest file of the base apk file")
         options.inputFiles.base.decodeResources(options, Apk.ResourceDecodingMode.MANIFEST_ONLY)
@@ -67,7 +50,7 @@ class Patcher(private val options: PatcherOptions) {
             this.also {
                 if (!ResourcePatch::class.java.isAssignableFrom(it)) return@also
                 // set the mode to decode all resources before running the patches
-                resourceDecodingMode = Apk.ResourceDecodingMode.FULL
+                decodingMode = Apk.ResourceDecodingMode.FULL
             }.dependencies?.forEach { it.java.isResource() }
         }
 
@@ -84,14 +67,14 @@ class Patcher(private val options: PatcherOptions) {
         allowedOverwrites: Iterable<String> = emptyList(),
         callback: (File) -> Unit
     ) {
+        val classes = context.bytecodeContext.classes
+
         for (file in files) {
             var modified = false
             for (classDef in MultiDexIO.readDexFile(true, file, dexFileNamer, null, null).classes) {
                 val type = classDef.type
 
-                val classes = context.bytecodeContext.classes.classes
-
-                val index =  classes.indexOfFirst { it.type == type }
+                val index = classes.indexOfFirst { it.type == type }
                 if (index == -1) {
                     logger.trace("Merging $type")
                     classes.add(classDef)
@@ -133,23 +116,25 @@ class Patcher(private val options: PatcherOptions) {
             // if the patch has already executed silently skip it
             if (executedPatches.contains(patchName)) {
                 if (!executedPatches[patchName]!!.success)
-                    return PatchResultError("'$patchName' did not succeed previously")
+                    return PatchResult.Error("'$patchName' did not succeed previously")
 
                 logger.trace("Skipping '$patchName' because it has already been applied")
 
-                return PatchResultSuccess()
+                return PatchResult.Success
             }
 
             // recursively execute all dependency patches
             patchClass.dependencies?.forEach { dependencyClass ->
                 val dependency = dependencyClass.java
 
-                val result = executePatch(dependency, executedPatches)
-                if (result.isSuccess()) return@forEach
-
-                val error = result.error()!!
-                val errorMessage = error.cause ?: error.message
-                return PatchResultError("'$patchName' depends on '${dependency.patchName}' but the following error was raised: $errorMessage")
+                executePatch(dependency, executedPatches).also {
+                    if (it is PatchResult.Success) return@forEach
+                }.let {
+                    with(it as PatchResult.Error) {
+                        val errorMessage = cause ?: message
+                        return PatchResult.Error("'$patchName' depends on '${dependency.patchName}' but the following error was raised: $errorMessage")
+                    }
+                }
             }
 
             patchClass.deprecated?.let { (reason, replacement) ->
@@ -167,7 +152,7 @@ class Patcher(private val options: PatcherOptions) {
                 context.bytecodeContext.also { context ->
                     (patchInstance as BytecodePatch).fingerprints?.resolve(
                         context,
-                        context.classes.classes
+                        context.classes
                     )
                 }
             }
@@ -175,21 +160,21 @@ class Patcher(private val options: PatcherOptions) {
             logger.trace("Executing '$patchName' of type: ${if (isResourcePatch) "resource" else "bytecode"}")
 
             return try {
-                patchInstance.execute(patchContext).also {
-                    executedPatches[patchName] = ExecutedPatch(patchInstance, it.isSuccess())
-                }
-            } catch (e: Exception) {
-                PatchResultError(e).also {
-                    executedPatches[patchName] = ExecutedPatch(patchInstance, false)
-                }
+                patchInstance.execute(patchContext)
+            } catch (patchException: PatchResult.Error) {
+                patchException
+            } catch (exception: Exception) {
+                PatchResult.Error("Unknown exception: ${exception.message}", exception.cause)
+            }.also {
+                executedPatches[patchName] = ExecutedPatch(patchInstance, it is PatchResult.Success)
             }
         }
 
         // prevent from decoding the manifest twice if it is not needed
-        //if (resourceDecodingMode == Apk.ResourceDecodingMode.FULL) {
+        if (decodingMode == Apk.ResourceDecodingMode.FULL) {
             logger.info("Decoding resources")
             options.inputFiles.decodeResources(options, Apk.ResourceDecodingMode.FULL)
-        //}
+        }
 
         logger.trace("Executing all patches")
 
@@ -197,16 +182,10 @@ class Patcher(private val options: PatcherOptions) {
 
         try {
             context.patches.forEach { patch ->
-                val patchResult = executePatch(patch, executedPatches)
-
-                val result = if (patchResult.isSuccess()) {
-                    Result.success(patchResult.success()!!)
-                } else {
-                    Result.failure(patchResult.error()!!)
+                with(executePatch(patch, executedPatches)) {
+                    yield(patch.patchName to this)
+                    if (stopOnError && this is PatchResult.Error) return@sequence
                 }
-
-                yield(patch.patchName to result)
-                if (stopOnError && patchResult.isError()) return@sequence
             }
             } finally {
                 executedPatches.values.reversed().forEach { (patch, _) ->
@@ -221,40 +200,31 @@ class Patcher(private val options: PatcherOptions) {
      * @return The [PatcherResult] of the [Patcher].
      */
     fun save(): PatcherResult {
-       // when (resourceDecodingMode) {
-            // Apk.ResourceDecodingMode.FULL -> {
-                logger.info("Compiling resources")
-                options.inputFiles.compileResources(options)
-            // }
-       //     else -> logger.info("Not compiling resources because resource patching is not required")
-       // }
-
-        // create patched dex files
-        val dexFiles = mutableMapOf<String, MemoryDataStore>().also { it ->
-            logger.trace("Creating new dex file")
-
-            val newDexFile = object : DexFile {
-                override fun getClasses() = context.bytecodeContext.classes.also { classes -> classes.replaceClasses() }
-                override fun getOpcodes() = this@Patcher.opcodes
-            }
-
-            // write modified dex files
-            logger.info("Writing modified dex files")
-            MultiDexIO.writeDexFile(
-                true, -1, // core count
-                it, dexFileNamer, newDexFile, DexIO.DEFAULT_MAX_DEX_POOL_SIZE, null
-            )
-        }.map {
-            app.revanced.patcher.util.dex.DexFile(it.key, it.value.readAt(0))
+        if (decodingMode == Apk.ResourceDecodingMode.FULL) {
+            logger.info("Compiling resources")
+            options.inputFiles.compileResources(options)
         }
 
-        // save the patch to the base apk
-        options.inputFiles.base.dexFiles = dexFiles
+        // write the patch to the base apk
+        with(options.inputFiles.base) {
+            logger.info("Writing patched dex files")
+
+            dexFiles = bytecodeData.dexFiles
+        }
 
         // collect the patched files
-        val patchedFiles = options.inputFiles.splits.toMutableList<Apk>().also { it.add(options.inputFiles.base) }
+        with(options.inputFiles) {
+            val patchedFiles = splits.toMutableList<Apk>().also { it.add(base) }
 
-        return PatcherResult(patchedFiles)
+            return PatcherResult(patchedFiles)
+        }
+    }
+
+    private inner class PatcherContext {
+        val patches = mutableListOf<Class<out Patch<Context>>>()
+
+        val bytecodeContext = BytecodeContext(options)
+        val resourceContext = ResourceContext(options)
     }
 }
 

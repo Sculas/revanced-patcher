@@ -1,7 +1,11 @@
+@file:Suppress("MemberVisibilityCanBePrivate")
+
 package app.revanced.patcher.apk
 
+import app.revanced.patcher.Patcher
 import app.revanced.patcher.PatcherOptions
 import app.revanced.patcher.extensions.nullOutputStream
+import app.revanced.patcher.util.ProxyBackedClassSet
 import brut.androlib.Androlib
 import brut.androlib.ApkDecoder
 import brut.androlib.meta.MetaInfo
@@ -16,6 +20,11 @@ import brut.androlib.res.decoder.XmlPullStreamDecoder
 import brut.androlib.res.xml.ResXmlPatcher
 import brut.directory.ExtFile
 import brut.directory.ZipUtils
+import lanchon.multidexlib2.DexIO
+import lanchon.multidexlib2.MultiDexIO
+import org.jf.dexlib2.Opcodes
+import org.jf.dexlib2.iface.DexFile
+import org.jf.dexlib2.writer.io.MemoryDataStore
 import java.io.File
 
 /**
@@ -27,7 +36,7 @@ sealed class Apk(filePath: String) {
     /**
      * The apk file.
      */
-    val file = File(filePath)
+    open val file = File(filePath)
 
     /**
      * The patched resources for the [Apk] given by the [app.revanced.patcher.Patcher].
@@ -59,7 +68,14 @@ sealed class Apk(filePath: String) {
          * @param filePath The path to the apk file.
          */
         class Language(filePath: String) : Split(filePath) {
-            override fun toString() = "language"
+            internal companion object {
+                /**
+                 * The name of the language split apk file.
+                 */
+                const val NAME = "language"
+            }
+
+            override fun toString() = NAME
         }
 
         /**
@@ -71,7 +87,14 @@ sealed class Apk(filePath: String) {
             // Library apks do not contain resources
             override val hasResources: Boolean = false
 
-            override fun toString() = "library"
+            internal companion object {
+                /**
+                 * The name of the library split apk file.
+                 */
+                const val NAME = "library"
+            }
+
+            override fun toString() = NAME
 
             /**
              * Write the resources for [Apk.Split.Library].
@@ -111,7 +134,14 @@ sealed class Apk(filePath: String) {
          * @param filePath The path to the apk file.
          */
         class Asset(filePath: String) : Split(filePath) {
-            override fun toString() = "asset"
+            internal companion object {
+                /**
+                 * The name of the asset split apk file.
+                 */
+                const val NAME = "asset"
+            }
+
+            override fun toString() = NAME
         }
     }
 
@@ -122,12 +152,68 @@ sealed class Apk(filePath: String) {
      * @see Apk
      */
     class Base(filePath: String) : Apk(filePath) {
-        override fun toString() = "base"
+        /**
+         * Data of the [Base] apk file.
+         */
+        internal val bytecodeData = BytecodeData()
 
         /**
-         * The patched dex files for the [Base] apk returned by the [app.revanced.patcher.Patcher].
+         * The patched dex files for the [Base] apk file.
          */
         lateinit var dexFiles: List<app.revanced.patcher.util.dex.DexFile>
+            internal set
+
+        override fun toString() = NAME
+
+        internal inner class BytecodeData {
+            private val opcodes: Opcodes
+
+            /**
+             * The classes and proxied classes of the [Base] apk file.
+             */
+            val classes = ProxyBackedClassSet(
+                MultiDexIO.readDexFile(
+                    true,
+                    file,
+                    Patcher.dexFileNamer,
+                    null,
+                    null
+                ).also { opcodes = it.opcodes }.classes
+            )
+
+            /**
+             * The dex files of the [Base] apk file from the [classes].
+             */
+            internal val dexFiles: List<app.revanced.patcher.util.dex.DexFile>
+                get() {
+                    // Make sure to replace all classes with their proxy
+                    val classes = classes.also(ProxyBackedClassSet::applyProxies)
+                    val opcodes = opcodes
+
+                    // Create patched dex files
+                    return mutableMapOf<String, MemoryDataStore>().also {
+                        val newDexFile = object : DexFile {
+                            override fun getClasses() = classes
+                            override fun getOpcodes() = opcodes
+                        }
+
+                        // Write modified dex files
+                        MultiDexIO.writeDexFile(
+                            true, -1, // core count
+                            it, Patcher.dexFileNamer, newDexFile, DexIO.DEFAULT_MAX_DEX_POOL_SIZE, null
+                        )
+                    }.map {
+                        app.revanced.patcher.util.dex.DexFile(it.key, it.value.readAt(0))
+                    }
+                }
+        }
+
+        internal companion object {
+            /**
+             * The name of the base apk file.
+             */
+            const val NAME = "base"
+        }
     }
 
     /**
@@ -212,11 +298,11 @@ sealed class Apk(filePath: String) {
 
 
     /**
-     * Compile resources for a [Apk].
+     * Write resources for a [Apk].
      *
      * @param options The [PatcherOptions] to compile the resources with.
      */
-    internal fun compileResources(options: PatcherOptions) {
+    internal fun writeResources(options: PatcherOptions) {
         val packageMetadata = packageMetadata
         val metaInfo = packageMetadata.metaInfo
 
