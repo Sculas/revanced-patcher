@@ -47,7 +47,7 @@ class BytecodeContext internal constructor(options: PatcherOptions) : Context {
  * @param options The [PatcherOptions] of the [Patcher].
  */
 class ResourceContext internal constructor(options: PatcherOptions) : Context {
-    private val resourceCacheDirectory = File(options.resourceCacheDirectory)
+    private val workDirectory = File(options.workDirectory).resolve(options.resourcesPath)
 
     /**
      * Get a file from the resources of an [Apk] file.
@@ -57,7 +57,7 @@ class ResourceContext internal constructor(options: PatcherOptions) : Context {
      * @return A [File] instance for the resource file.
      */
     fun getFile(path: String, context: ApkContext = ApkContext.BASE) =
-        context.resolve(resourceCacheDirectory).resolve(path)
+        context.resolve(workDirectory).resolve(path)
 
     /**
      * Get a file from the resources of an [Apk] file with [context] or if it does not exist in [context] from [orContext].

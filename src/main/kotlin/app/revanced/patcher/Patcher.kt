@@ -132,7 +132,7 @@ class Patcher(private val options: PatcherOptions) {
                 }.let {
                     with(it as PatchResult.Error) {
                         val errorMessage = cause ?: message
-                        return PatchResult.Error("'$patchName' depends on '${dependency.patchName}' but the following error was raised: $errorMessage")
+                        return PatchResult.Error("'$patchName' depends on '${dependency.patchName}' but the following exception was raised: $errorMessage", it.cause)
                     }
                 }
             }
@@ -164,7 +164,7 @@ class Patcher(private val options: PatcherOptions) {
             } catch (patchException: PatchResult.Error) {
                 patchException
             } catch (exception: Exception) {
-                PatchResult.Error("Unknown exception: ${exception.message}", exception.cause)
+                PatchResult.Error("Unhandled patch exception: ${exception.message}", exception)
             }.also {
                 executedPatches[patchName] = ExecutedPatch(patchInstance, it is PatchResult.Success)
             }
@@ -172,8 +172,9 @@ class Patcher(private val options: PatcherOptions) {
 
         // prevent from decoding the manifest twice if it is not needed
         if (decodingMode == Apk.ResourceDecodingMode.FULL) {
-            logger.info("Decoding resources")
-            options.inputFiles.decodeResources(options, Apk.ResourceDecodingMode.FULL)
+            options.inputFiles.decodeResources(options, Apk.ResourceDecodingMode.FULL).forEach {
+                logger.info("Decoding resources for $it apk file")
+            }
         }
 
         logger.trace("Executing all patches")
@@ -201,15 +202,14 @@ class Patcher(private val options: PatcherOptions) {
      */
     fun save(): PatcherResult {
         if (decodingMode == Apk.ResourceDecodingMode.FULL) {
-            logger.info("Compiling resources")
-            options.inputFiles.compileResources(options)
+            options.inputFiles.writeResources(options).forEach {
+                logger.info("Writing patched resources for $it apk file")
+            }
         }
 
-        // write the patch to the base apk
         with(options.inputFiles.base) {
             logger.info("Writing patched dex files")
-
-            dexFiles = bytecodeData.dexFiles
+            dexFiles = bytecodeData.writeDexFiles()
         }
 
         // collect the patched files

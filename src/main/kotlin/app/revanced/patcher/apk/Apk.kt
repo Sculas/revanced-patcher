@@ -6,6 +6,7 @@ import app.revanced.patcher.Patcher
 import app.revanced.patcher.PatcherOptions
 import app.revanced.patcher.extensions.nullOutputStream
 import app.revanced.patcher.util.ProxyBackedClassSet
+import app.revanced.patcher.util.dex.DexFile
 import brut.androlib.Androlib
 import brut.androlib.ApkDecoder
 import brut.androlib.meta.MetaInfo
@@ -23,7 +24,6 @@ import brut.directory.ZipUtils
 import lanchon.multidexlib2.DexIO
 import lanchon.multidexlib2.MultiDexIO
 import org.jf.dexlib2.Opcodes
-import org.jf.dexlib2.iface.DexFile
 import org.jf.dexlib2.writer.io.MemoryDataStore
 import java.io.File
 
@@ -101,15 +101,15 @@ sealed class Apk(filePath: String) {
              *
              * @param resources Will be ignored.
              * @param patchApk The [Apk] file to write the resources to.
-             * @param apkCacheDirectory The directory where the resources are stored.
+             * @param apkWorkDirectory The directory where the resources are stored.
              * @param metaInfo Will be ignored.
              */
             override fun writeResources(
-                resources: AndrolibResources, patchApk: File, apkCacheDirectory: File, metaInfo: MetaInfo
+                resources: AndrolibResources, patchApk: File, apkWorkDirectory: File, metaInfo: MetaInfo
             ) {
                 // do not compress libraries for speed, because the patchApk is a temporal file
-                val doNotCompress = apkCacheDirectory.listFiles()?.map { it.name }
-                ZipUtils.zipFolders(apkCacheDirectory, patchApk, null, doNotCompress)
+                val doNotCompress = apkWorkDirectory.listFiles()?.map { it.name }
+                ZipUtils.zipFolders(apkWorkDirectory, patchApk, null, doNotCompress)
             }
 
             /**
@@ -160,7 +160,7 @@ sealed class Apk(filePath: String) {
         /**
          * The patched dex files for the [Base] apk file.
          */
-        lateinit var dexFiles: List<app.revanced.patcher.util.dex.DexFile>
+        lateinit var dexFiles: List<DexFile>
             internal set
 
         override fun toString() = NAME
@@ -182,30 +182,31 @@ sealed class Apk(filePath: String) {
             )
 
             /**
-             * The dex files of the [Base] apk file from the [classes].
+             * Write [classes] to [DexFile]s.
+             *
+             * @return The [DexFile]s.
              */
-            internal val dexFiles: List<app.revanced.patcher.util.dex.DexFile>
-                get() {
-                    // Make sure to replace all classes with their proxy
-                    val classes = classes.also(ProxyBackedClassSet::applyProxies)
-                    val opcodes = opcodes
+            internal fun writeDexFiles(): List<DexFile> {
+                // Make sure to replace all classes with their proxy
+                val classes = classes.also(ProxyBackedClassSet::applyProxies)
+                val opcodes = opcodes
 
-                    // Create patched dex files
-                    return mutableMapOf<String, MemoryDataStore>().also {
-                        val newDexFile = object : DexFile {
-                            override fun getClasses() = classes
-                            override fun getOpcodes() = opcodes
-                        }
-
-                        // Write modified dex files
-                        MultiDexIO.writeDexFile(
-                            true, -1, // core count
-                            it, Patcher.dexFileNamer, newDexFile, DexIO.DEFAULT_MAX_DEX_POOL_SIZE, null
-                        )
-                    }.map {
-                        app.revanced.patcher.util.dex.DexFile(it.key, it.value.readAt(0))
+                // Create patched dex files
+                return mutableMapOf<String, MemoryDataStore>().also {
+                    val newDexFile = object : org.jf.dexlib2.iface.DexFile {
+                        override fun getClasses() = classes
+                        override fun getOpcodes() = opcodes
                     }
+
+                    // Write modified dex files
+                    MultiDexIO.writeDexFile(
+                        true, -1, // core count
+                        it, Patcher.dexFileNamer, newDexFile, DexIO.DEFAULT_MAX_DEX_POOL_SIZE, null
+                    )
+                }.map {
+                    DexFile(it.key, it.value.readAt(0))
                 }
+            }
         }
 
         internal companion object {
@@ -231,7 +232,7 @@ sealed class Apk(filePath: String) {
             val resourceTable = androlib.getResTable(extInputFile, hasResources)
             when (mode) {
                 ResourceDecodingMode.FULL -> {
-                    val outDir = File(options.resourceCacheDirectory).resolve("resources").resolve(toString())
+                    val outDir = File(options.workDirectory).resolve(options.resourcesPath).resolve(toString())
                         .also { it.mkdirs() }
 
                     readResources(androlib, extInputFile, outDir, resourceTable)
@@ -255,13 +256,13 @@ sealed class Apk(filePath: String) {
                     decoder.currentPackage = ResPackage(resourceTable, 0, null)
 
                     // create xml parser with the decoder
-                    val axmlParser = AXmlResourceParser()
-                    axmlParser.attrDecoder = decoder
+                    val aXmlParser = AXmlResourceParser()
+                    aXmlParser.attrDecoder = decoder
 
                     // parse package information with the decoder and parser which will set required values in the resource table
                     // instead of decodeManifest another more low level solution can be created to make it faster/better
                     XmlPullStreamDecoder(
-                        axmlParser, AndrolibResources().resXmlSerializer
+                        aXmlParser, AndrolibResources().resXmlSerializer
                     ).decodeManifest(
                         extInputFile.directory.getFileInput("AndroidManifest.xml"), nullOutputStream
                     )
@@ -270,8 +271,9 @@ sealed class Apk(filePath: String) {
 
             // read of the resourceTable which is created by reading the manifest file
             with(packageMetadata) {
-                packageName = resourceTable.currentResPackage.name
-                packageVersion = resourceTable.versionInfo.versionName
+                resourceTable.currentResPackage.name?.let { packageName = it }
+                resourceTable.versionInfo.versionName?.let { packageVersion = it }
+
                 metaInfo.versionInfo = resourceTable.versionInfo
                 metaInfo.sdkInfo = resourceTable.sdkInfo
             }
@@ -300,7 +302,7 @@ sealed class Apk(filePath: String) {
     /**
      * Write resources for a [Apk].
      *
-     * @param options The [PatcherOptions] to compile the resources with.
+     * @param options The [PatcherOptions] to write the resources with.
      */
     internal fun writeResources(options: PatcherOptions) {
         val packageMetadata = packageMetadata
@@ -320,17 +322,17 @@ sealed class Apk(filePath: String) {
             resources.setSparseResources(metaInfo.sparseResources)
         }
 
-        val cacheDirectory = File(options.resourceCacheDirectory)
+        val workDirectory = File(options.workDirectory)
 
         // the resulting resource file
-        val patchApk = cacheDirectory
-            .resolve("patch")
+        val patchApk = workDirectory
+            .resolve(options.patchPath)
             .also { it.mkdirs() }
             .resolve(file.name)
             .also { resources = it }
 
-        val apkCacheDirectory = cacheDirectory.resolve("resources").resolve(toString())
-        writeResources(androlibResources, patchApk, apkCacheDirectory, metaInfo)
+        val apkWorkDirectory = workDirectory.resolve(options.resourcesPath).resolve(toString())
+        writeResources(androlibResources, patchApk, apkWorkDirectory, metaInfo)
     }
 
     /**
@@ -338,16 +340,16 @@ sealed class Apk(filePath: String) {
      *
      * @param resources The [AndrolibResources] to read the framework ids from.
      * @param patchApk The [Apk] file to write the resources to.
-     * @param apkCacheDirectory The directory where the resources are stored.
+     * @param apkWorkDirectory The directory where the resources are stored.
      * @param metaInfo The [MetaInfo] for the [Apk] file.
      */
     protected open fun writeResources(
-        resources: AndrolibResources, patchApk: File, apkCacheDirectory: File, metaInfo: MetaInfo
+        resources: AndrolibResources, patchApk: File, apkWorkDirectory: File, metaInfo: MetaInfo
     ) = resources.aaptPackage(
         patchApk,
-        apkCacheDirectory.resolve("AndroidManifest.xml")
+        apkWorkDirectory.resolve("AndroidManifest.xml")
             .also { ResXmlPatcher.fixingPublicAttrsInProviderAttributes(it) },
-        apkCacheDirectory.resolve("res"),
+        apkWorkDirectory.resolve("res"),
         null,
         null,
         metaInfo.usesFramework.ids.map { id ->
@@ -403,15 +405,13 @@ sealed class Apk(filePath: String) {
         /**
          * The package name of the [Apk] file.
          */
-        var packageName: String? = null
+        var packageName: String = "unnamed split apk file"
             internal set
 
         /**
          * The package version of the [Apk] file.
-         *
-         * Note: __null__ for [Apk.Split.Library].
          */
-        var packageVersion: String? = null
+        var packageVersion: String = "0.0.0"
             internal set
     }
 }

@@ -10,13 +10,21 @@ import app.revanced.patcher.PatcherOptions
  */
 data class SplitApkFile(val base: Apk.Base, val splits: List<Apk.Split> = emptyList()) {
     /**
-     * Compile resources for the files in [SplitApkFile].
+     * Write resources for the files in [SplitApkFile].
      *
-     * @param options The [PatcherOptions] to compile the resources with.
+     * @param options The [PatcherOptions] to write the resources with.
+     * @return A sequence of the [Apk] files which resources are being written.
      */
-    internal fun compileResources(options: PatcherOptions) {
-        base.writeResources(options)
-        splits.forEach { it.writeResources(options) }
+    internal fun writeResources(options: PatcherOptions) = sequence {
+        with(base) {
+            yield(this)
+            writeResources(options)
+        }
+
+        splits.forEach {
+            yield(it)
+            it.writeResources(options)
+        }
     }
 
     /**
@@ -24,9 +32,17 @@ data class SplitApkFile(val base: Apk.Base, val splits: List<Apk.Split> = emptyL
      *
      * @param options The [PatcherOptions] to decode the resources with.
      * @param mode The [Apk.ResourceDecodingMode] to use.
+     * @return A sequence of the [Apk] files which resources are being decoded.
      */
-    internal fun decodeResources(options: PatcherOptions, mode: Apk.ResourceDecodingMode) {
-        base.decodeResources(options, mode)
-        splits.forEach { it.decodeResources(options, mode) }
+    internal fun decodeResources(options: PatcherOptions, mode: Apk.ResourceDecodingMode) = sequence {
+        with(base) {
+            yield(this)
+            decodeResources(options, mode)
+        }
+
+        splits.forEach {
+            yield(it)
+            it.decodeResources(options, mode)
+        }
     }
 }
