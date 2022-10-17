@@ -26,6 +26,8 @@ import lanchon.multidexlib2.MultiDexIO
 import org.jf.dexlib2.Opcodes
 import org.jf.dexlib2.writer.io.MemoryDataStore
 import java.io.File
+import java.nio.file.FileSystems
+import kotlin.io.path.copyTo
 
 /**
  * The apk file that is to be patched.
@@ -107,9 +109,25 @@ sealed class Apk(filePath: String) {
             override fun writeResources(
                 resources: AndrolibResources, patchApk: File, apkWorkDirectory: File, metaInfo: MetaInfo
             ) {
-                // do not compress libraries for speed, because the patchApk is a temporal file
-                val doNotCompress = apkWorkDirectory.listFiles()?.map { it.name }
-                ZipUtils.zipFolders(apkWorkDirectory, patchApk, null, doNotCompress)
+                // do not compress libraries (.so) for speed, because the patchApk is a temporal file
+                ZipUtils.zipFolders(apkWorkDirectory, patchApk, null, listOf("so"))
+
+                // write the patchApk file containing the manifest file
+                apkWorkDirectory.resolve(patchApk.name).also { manifestPatchApk ->
+                    super.writeResources(resources, manifestPatchApk, apkWorkDirectory, metaInfo)
+                }.let { manifestPatchApk ->
+                    // copy AndroidManifest.xml from manifestPatchApk to patchApk
+                    fun File.createFs() = FileSystems.newFileSystem(toPath(), null as ClassLoader?)
+                    manifestPatchApk.createFs().use { manifestPatchApkFs ->
+                        patchApk.createFs().use { patchApkFs ->
+                            // delete AndroidManifest.xml from patchApk and copy it from manifestPatchApk
+                            patchApkFs.getPath("/AndroidManifest.xml").also { manifestPath ->
+                                patchApkFs.provider().delete(manifestPath)
+                                manifestPatchApkFs.getPath("/AndroidManifest.xml").copyTo(manifestPath)
+                            }
+                        }
+                    }
+                }
             }
 
             /**
@@ -118,12 +136,13 @@ sealed class Apk(filePath: String) {
              * @param androlib The [Androlib] instance to decode the resources with.
              * @param extInputFile The [Apk] file.
              * @param outDir The directory to write the resources to.
-             * @param resourceTable Will be ignored.
+             * @param resourceTable The [ResTable] to use.
              */
             override fun readResources(
                 androlib: Androlib, extInputFile: ExtFile, outDir: File, resourceTable: ResTable?
             ) {
-                // only unpack raw files, such as libs
+                // decode the manifest without looking up attribute references because there is no resources.arsc file
+                androlib.decodeManifestFull(extInputFile, outDir, resourceTable)
                 androlib.decodeRawFiles(extInputFile, outDir, ApkDecoder.DECODE_ASSETS_NONE)
             }
         }
@@ -246,11 +265,10 @@ sealed class Apk(filePath: String) {
                         // read files to not compress
                         metaInfo.doNotCompress = buildList {
                             androlib.recordUncompressedFiles(extInputFile, this)
-                        }
+                        }.takeIf { it.isNotEmpty() } // uncomment this line to know why it is required
                     }
                 }
                 ResourceDecodingMode.MANIFEST_ONLY -> {
-
                     // create decoder for the resource table
                     val decoder = ResAttrDecoder()
                     decoder.currentPackage = ResPackage(resourceTable, 0, null)
@@ -349,7 +367,7 @@ sealed class Apk(filePath: String) {
         patchApk,
         apkWorkDirectory.resolve("AndroidManifest.xml")
             .also { ResXmlPatcher.fixingPublicAttrsInProviderAttributes(it) },
-        apkWorkDirectory.resolve("res"),
+        apkWorkDirectory.resolve("res").takeIf { hasResources },
         null,
         null,
         metaInfo.usesFramework.ids.map { id ->
@@ -399,7 +417,7 @@ sealed class Apk(filePath: String) {
         /**
          * List of [Apk] files which should remain uncompressed.
          */
-        val doNotCompress: Collection<String>
+        val doNotCompress: Collection<String>?
             get() = metaInfo.doNotCompress
 
         /**
