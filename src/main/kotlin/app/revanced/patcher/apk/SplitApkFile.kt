@@ -17,14 +17,18 @@ data class SplitApkFile(val base: Apk.Base, val splits: List<Apk.Split> = emptyL
      */
     internal fun writeResources(options: PatcherOptions) = sequence {
         with(base) {
-            yield(this)
-            writeResources(options)
+            val exception = try {
+                writeResources(options)
+
+                null
+            } catch (exception: Apk.ApkException.Write) {
+                exception
+            }
+
+            yield(SplitApkResult.Write(this, exception))
         }
 
-        splits.forEach {
-            yield(it)
-            it.writeResources(options)
-        }
+        splits.forEach { yield(SplitApkResult.Write(it)) }
     }
 
     /**
@@ -44,5 +48,9 @@ data class SplitApkFile(val base: Apk.Base, val splits: List<Apk.Split> = emptyL
             yield(it)
             it.decodeResources(options, mode)
         }
+    }
+
+    sealed class SplitApkResult(val apk: Apk, val exception: Apk.ApkException? = null) {
+        class Write(apk: Apk, exception: Apk.ApkException.Write? = null) : SplitApkResult(apk, exception)
     }
 }

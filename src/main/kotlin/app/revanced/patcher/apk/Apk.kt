@@ -8,6 +8,7 @@ import app.revanced.patcher.extensions.nullOutputStream
 import app.revanced.patcher.util.ProxyBackedClassSet
 import app.revanced.patcher.util.dex.DexFile
 import brut.androlib.Androlib
+import brut.androlib.AndrolibException
 import brut.androlib.ApkDecoder
 import brut.androlib.meta.MetaInfo
 import brut.androlib.meta.UsesFramework
@@ -248,13 +249,22 @@ sealed class Apk(filePath: String) {
         try {
             val androlib = Androlib(BuildOptions().also { it.setBuildOptions(options) })
 
-            val resourceTable = androlib.getResTable(extInputFile, hasResources)
+            val resourceTable = try {
+                androlib.getResTable(extInputFile, hasResources)
+            } catch (exception: AndrolibException) {
+                throw ApkException.Decode("Failed to get the resource table", exception)
+            }
+
             when (mode) {
                 ResourceDecodingMode.FULL -> {
                     val outDir = File(options.workDirectory).resolve(options.resourcesPath).resolve(toString())
                         .also { it.mkdirs() }
 
-                    readResources(androlib, extInputFile, outDir, resourceTable)
+                    try {
+                        readResources(androlib, extInputFile, outDir, resourceTable)
+                    } catch (exception: AndrolibException) {
+                        throw ApkException.Decode("Failed to decode resources for $this", exception)
+                    }
 
                     // read additional metadata from the resource table
                     with(packageMetadata) {
@@ -279,11 +289,19 @@ sealed class Apk(filePath: String) {
 
                     // parse package information with the decoder and parser which will set required values in the resource table
                     // instead of decodeManifest another more low level solution can be created to make it faster/better
-                    XmlPullStreamDecoder(
-                        aXmlParser, AndrolibResources().resXmlSerializer
-                    ).decodeManifest(
-                        extInputFile.directory.getFileInput("AndroidManifest.xml"), nullOutputStream
-                    )
+                    with(
+                        XmlPullStreamDecoder(
+                            aXmlParser, AndrolibResources().resXmlSerializer
+                        )
+                    ) {
+                        try {
+                            decodeManifest(
+                                extInputFile.directory.getFileInput("AndroidManifest.xml"), nullOutputStream
+                            )
+                        } catch (exception: AndrolibException) {
+                            throw ApkException.Decode("Failed to decode the manifest file for $this", exception)
+                        }
+                    }
                 }
             }
 
@@ -323,10 +341,23 @@ sealed class Apk(filePath: String) {
      * @param options The [PatcherOptions] to write the resources with.
      */
     internal fun writeResources(options: PatcherOptions) {
+        val workDirectory = File(options.workDirectory)
+
+        val apkWorkDirectory = workDirectory.resolve(options.resourcesPath).resolve(toString()).also {
+            if (!it.exists()) throw ApkException.Write.ResourceDirectoryNotFound
+        }
+
+        // the resulting resource file
+        val patchApk = workDirectory
+            .resolve(options.patchPath)
+            .also { it.mkdirs() }
+            .resolve(file.name)
+            .also { resources = it }
+
         val packageMetadata = packageMetadata
         val metaInfo = packageMetadata.metaInfo
 
-        val androlibResources = AndrolibResources().also { resources ->
+        with(AndrolibResources().also { resources ->
             resources.buildOptions = BuildOptions().also { buildOptions ->
                 buildOptions.setBuildOptions(options)
                 buildOptions.isFramework = metaInfo.isFrameworkApk
@@ -338,19 +369,9 @@ sealed class Apk(filePath: String) {
             resources.setVersionInfo(metaInfo.versionInfo)
             resources.setSharedLibrary(metaInfo.sharedLibrary)
             resources.setSparseResources(metaInfo.sparseResources)
+        }) {
+            writeResources(this, patchApk, apkWorkDirectory, metaInfo)
         }
-
-        val workDirectory = File(options.workDirectory)
-
-        // the resulting resource file
-        val patchApk = workDirectory
-            .resolve(options.patchPath)
-            .also { it.mkdirs() }
-            .resolve(file.name)
-            .also { resources = it }
-
-        val apkWorkDirectory = workDirectory.resolve(options.resourcesPath).resolve(toString())
-        writeResources(androlibResources, patchApk, apkWorkDirectory, metaInfo)
     }
 
     /**
@@ -431,5 +452,12 @@ sealed class Apk(filePath: String) {
          */
         var packageVersion: String = "0.0.0"
             internal set
+    }
+
+    sealed class ApkException(message: String, throwable: Throwable? = null) : Exception(message, throwable) {
+        class Decode(message: String, throwable: Throwable? = null) : ApkException(message, throwable)
+        open class Write(message: String, throwable: Throwable? = null) : ApkException(message, throwable) {
+            object ResourceDirectoryNotFound : Write("Failed to find the resource directory")
+        }
     }
 }

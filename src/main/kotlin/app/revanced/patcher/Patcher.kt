@@ -201,23 +201,24 @@ class Patcher(private val options: PatcherOptions) {
      * @return The [PatcherResult] of the [Patcher].
      */
     fun save(): PatcherResult {
+        val patchResults = mutableListOf<PatcherResult.Patch>()
+
         if (decodingMode == Apk.ResourceDecodingMode.FULL) {
-            options.inputFiles.writeResources(options).forEach {
-                logger.info("Writing patched resources for $it apk file")
+            options.inputFiles.writeResources(options).forEach { writeResult ->
+                logger.info("Writing patched resources for ${writeResult.apk} apk file")
+
+                patchResults.add(PatcherResult.Patch.Split(writeResult.apk as Apk.Split))
             }
         }
 
         with(options.inputFiles.base) {
             logger.info("Writing patched dex files")
             dexFiles = bytecodeData.writeDexFiles()
+
+            patchResults.add(PatcherResult.Patch.Base(this))
         }
 
-        // collect the patched files
-        with(options.inputFiles) {
-            val patchedFiles = splits.toMutableList<Apk>().also { it.add(base) }
-
-            return PatcherResult(patchedFiles)
-        }
+        return PatcherResult(patchResults)
     }
 
     private inner class PatcherContext {
