@@ -37,6 +37,32 @@ import kotlin.io.path.copyTo
  */
 sealed class Apk(filePath: String) {
     /**
+     * Move resources from [apk] to the current [Apk] file.
+     *
+     * @param apk The [Apk] file to move resources from.
+     * @param options The [PatcherOptions] of the [Patcher].
+     */
+    internal open fun moveResources(apk: Apk, options: PatcherOptions): Unit =
+        throw UnsupportedOperationException("Cannot move resources from $this to $apk")
+
+    /**
+     * Get the resource directory of the apk file.
+     *
+     * @param options The patcher context to resolve the resource directory for the [Apk] file.
+     * @return The resource directory of the [Apk] file.
+     */
+    protected fun getResourceDirectory(options: PatcherOptions) = options.resourceDirectory.resolve(toString())
+
+    /**
+     * Get a file from the resources of the [Apk] file.
+     *
+     * @param path The path of the resource file.
+     * @param options The patcher context to resolve the resource directory for the [Apk] file.
+     * @return A [File] instance for the resource file.
+     */
+    internal fun getFile(path: String, options: PatcherOptions) = getResourceDirectory(options).resolve(path)
+
+    /**
      * The apk file.
      */
     open val file = File(filePath)
@@ -53,11 +79,6 @@ sealed class Apk(filePath: String) {
     val packageMetadata = PackageMetadata()
 
     /**
-     *  If the [Apk] has resources.
-     */
-    open val hasResources: Boolean = true
-
-    /**
      * The split apk file that is to be patched.
      *
      * @param filePath The path to the apk file.
@@ -71,14 +92,7 @@ sealed class Apk(filePath: String) {
          * @param filePath The path to the apk file.
          */
         class Language(filePath: String) : Split(filePath) {
-            internal companion object {
-                /**
-                 * The name of the language split apk file.
-                 */
-                const val NAME = "language"
-            }
-
-            override fun toString() = NAME
+            override fun toString() = "language"
         }
 
         /**
@@ -87,17 +101,8 @@ sealed class Apk(filePath: String) {
          * @param filePath The path to the apk file.
          */
         class Library(filePath: String) : Split(filePath) {
-            // Library apks do not contain resources
-            override val hasResources: Boolean = false
 
-            internal companion object {
-                /**
-                 * The name of the library split apk file.
-                 */
-                const val NAME = "library"
-            }
-
-            override fun toString() = NAME
+            override fun toString() = "library"
 
             /**
              * Write the resources for [Apk.Split.Library].
@@ -154,14 +159,7 @@ sealed class Apk(filePath: String) {
          * @param filePath The path to the apk file.
          */
         class Asset(filePath: String) : Split(filePath) {
-            internal companion object {
-                /**
-                 * The name of the asset split apk file.
-                 */
-                const val NAME = "asset"
-            }
-
-            override fun toString() = NAME
+            override fun toString() = "asset"
         }
     }
 
@@ -183,7 +181,27 @@ sealed class Apk(filePath: String) {
         lateinit var dexFiles: List<DexFile>
             internal set
 
-        override fun toString() = NAME
+        override fun toString() = "base"
+
+        override fun moveResources(apk: Apk, options: PatcherOptions) {
+            if (apk is Base) throw UnsupportedOperationException("Cannot move resources from $this to $apk")
+
+            val fromResourceDirectory = apk.getResourceDirectory(options)
+            val intoResourceDirectory = getResourceDirectory(options)
+
+            when (apk) {
+                is Split.Asset -> {
+                    TODO("Move resources from asset split apk file to base apk file")
+                }
+                is Split.Language -> {
+                    TODO("Move resources from language split apk file to base apk file")
+                }
+                is Split.Library -> {
+                    TODO("Move resources from library split apk file to base apk file")
+                }
+                else -> throw Exception("Unreachable")
+            }
+        }
 
         internal inner class BytecodeData {
             private val opcodes: Opcodes
@@ -228,13 +246,6 @@ sealed class Apk(filePath: String) {
                 }
             }
         }
-
-        internal companion object {
-            /**
-             * The name of the base apk file.
-             */
-            const val NAME = "base"
-        }
     }
 
     /**
@@ -250,14 +261,14 @@ sealed class Apk(filePath: String) {
             val androlib = Androlib(BuildOptions().also { it.setBuildOptions(options) })
 
             val resourceTable = try {
-                androlib.getResTable(extInputFile, hasResources)
+                androlib.getResTable(extInputFile, this !is Split.Library)
             } catch (exception: AndrolibException) {
                 throw ApkException.Decode("Failed to get the resource table", exception)
             }
 
             when (mode) {
                 ResourceDecodingMode.FULL -> {
-                    val outDir = File(options.workDirectory).resolve(options.resourcesPath).resolve(toString())
+                    val outDir = getResourceDirectory(options)
                         .also { it.mkdirs() }
 
                     try {
@@ -341,15 +352,12 @@ sealed class Apk(filePath: String) {
      * @param options The [PatcherOptions] to write the resources with.
      */
     internal fun writeResources(options: PatcherOptions) {
-        val workDirectory = File(options.workDirectory)
-
-        val apkWorkDirectory = workDirectory.resolve(options.resourcesPath).resolve(toString()).also {
+        val apkWorkDirectory = getResourceDirectory(options).also {
             if (!it.exists()) throw ApkException.Write.ResourceDirectoryNotFound
         }
 
         // the resulting resource file
-        val patchApk = workDirectory
-            .resolve(options.patchPath)
+        val patchApk = options.patchDirectory
             .also { it.mkdirs() }
             .resolve(file.name)
             .also { resources = it }
@@ -388,7 +396,7 @@ sealed class Apk(filePath: String) {
         patchApk,
         apkWorkDirectory.resolve("AndroidManifest.xml")
             .also { ResXmlPatcher.fixingPublicAttrsInProviderAttributes(it) },
-        apkWorkDirectory.resolve("res").takeIf { hasResources },
+        apkWorkDirectory.resolve("res").takeUnless { this is Split.Library },
         null,
         null,
         metaInfo.usesFramework.ids.map { id ->

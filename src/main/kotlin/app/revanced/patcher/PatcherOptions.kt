@@ -1,24 +1,31 @@
 package app.revanced.patcher
 
-import app.revanced.patcher.apk.SplitApkFile
+import app.revanced.patcher.apk.ApkBundle
 import app.revanced.patcher.logging.Logger
+import java.io.File
 
 /**
  * Options for the [Patcher].
- * @param inputFiles The input files (usually apk files).
+ * @param apkBundle The [ApkBundle].
  * @param workDirectory Directory to work in.
  * @param aaptPath Optional path to a custom aapt binary.
  * @param frameworkPath Optional path to a custom framework folder.
  * @param logger Custom logger implementation for the [Patcher].
  */
-data class PatcherOptions(
-    internal val inputFiles: SplitApkFile,
-    internal val workDirectory: String,
+class PatcherOptions(
+    internal val apkBundle: ApkBundle,
+    workDirectory: String,
     internal val aaptPath: String = "",
     internal val frameworkPath: String? = null,
     internal val logger: Logger = Logger.Nop
 ) {
-    // relative paths to PatcherOptions.workDirectory
-    internal val resourcesPath = "resources"
-    internal val patchPath = "patch"
+    internal val workDirectory = File(workDirectory)
+    internal val resourceDirectory = this.workDirectory.resolve(RESOURCE_PATH)
+    internal val patchDirectory = this.workDirectory.resolve(PATCH_PATH)
+
+    companion object {
+        // relative paths to PatcherOptions.workDirectory
+        private const val RESOURCE_PATH = "resources"
+        private const val PATCH_PATH = "patch"
+    }
 }

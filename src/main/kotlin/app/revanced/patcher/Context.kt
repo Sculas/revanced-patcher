@@ -28,7 +28,7 @@ class BytecodeContext internal constructor(options: PatcherOptions) : Context {
     /**
      * The list of classes.
      */
-    val classes = options.inputFiles.base.bytecodeData.classes
+    val classes = options.apkBundle.base.bytecodeData.classes
 
     /**
      * Create a [MethodWalker] instance for the current [BytecodeContext].
@@ -46,8 +46,11 @@ class BytecodeContext internal constructor(options: PatcherOptions) : Context {
  *
  * @param options The [PatcherOptions] of the [Patcher].
  */
-class ResourceContext internal constructor(options: PatcherOptions) : Context {
-    private val workDirectory = File(options.workDirectory).resolve(options.resourcesPath)
+class ResourceContext internal constructor(private val options: PatcherOptions) : Context {
+    /**
+     * The current [app.revanced.patcher.apk.ApkBundle].
+     */
+    val apkBundle = options.apkBundle
 
     /**
      * Get a file from the resources of an [Apk] file.
@@ -56,8 +59,7 @@ class ResourceContext internal constructor(options: PatcherOptions) : Context {
      * @param context The [Apk] file context to get the resource file in.
      * @return A [File] instance for the resource file.
      */
-    fun getFile(path: String, context: ApkContext = ApkContext.BASE) =
-        context.resolve(workDirectory).resolve(path)
+    fun getFile(path: String, context: Apk = apkBundle.base) = context.getFile(path, options)
 
     /**
      * Get a file from the resources of an [Apk] file with [context] or if it does not exist in [context] from [orContext].
@@ -67,7 +69,7 @@ class ResourceContext internal constructor(options: PatcherOptions) : Context {
      * @param orContext The [Apk] file context to get the resource file in if it could not be found in the previous [context].
      * @return A [File] instance for the resource file.
      */
-    fun getFileOr(path: String, context: ApkContext = ApkContext.BASE, orContext: ApkContext = ApkContext.ASSET) =
+    fun getFileOr(path: String, context: Apk = apkBundle.base, orContext: Apk = apkBundle.splits!!.library!!) =
         getFile(path, context).takeIf { it.exists() } ?: getFile(path, orContext)
 
     /**
@@ -84,23 +86,10 @@ class ResourceContext internal constructor(options: PatcherOptions) : Context {
      * @param path The path to the DOM file.
      * @return A [DomFileEditor] instance.
      */
-    fun openEditor(path: String, context: ApkContext = ApkContext.BASE) =
+    fun openEditor(path: String, context: Apk = apkBundle.base) =
         DomFileEditor(this@ResourceContext.getFile(path, context))
 
-    /**
-     * Enum to get the resource file in context to [Apk] files.
-     */
-
-    enum class ApkContext(private val path: String) {
-        BASE(Apk.Base.NAME),
-        LIBRARY(Apk.Split.Library.NAME),
-        ASSET(Apk.Split.Asset.NAME),
-        LANGUAGE(Apk.Split.Language.NAME);
-
-        internal fun resolve(root: File) = root.resolve(this.path)
-    }
 }
-
 /**
  * Wrapper for a file that can be edited as a dom document.
  *

@@ -34,7 +34,7 @@ class Patcher(private val options: PatcherOptions) {
     init {
         // decode manifest file
         logger.info("Decoding manifest file of the base apk file")
-        options.inputFiles.base.decodeResources(options, Apk.ResourceDecodingMode.MANIFEST_ONLY)
+        options.apkBundle.base.decodeResources(options, Apk.ResourceDecodingMode.MANIFEST_ONLY)
     }
 
     /**
@@ -172,7 +172,7 @@ class Patcher(private val options: PatcherOptions) {
 
         // prevent from decoding the manifest twice if it is not needed
         if (decodingMode == Apk.ResourceDecodingMode.FULL) {
-            options.inputFiles.decodeResources(options, Apk.ResourceDecodingMode.FULL).forEach {
+            options.apkBundle.decodeResources(options, Apk.ResourceDecodingMode.FULL).forEach {
                 logger.info("Decoding resources for $it apk file")
             }
         }
@@ -201,17 +201,26 @@ class Patcher(private val options: PatcherOptions) {
      * @return The [PatcherResult] of the [Patcher].
      */
     fun save(): PatcherResult {
+        // Necessary step to create a full base apk file
+        // because Androlib does not support decoding and writing resources from split apk files yet
+        with(options.apkBundle) {
+            splits?.forEach {
+                base.moveResources(it, options)
+            }
+        }
+
         val patchResults = mutableListOf<PatcherResult.Patch>()
 
         if (decodingMode == Apk.ResourceDecodingMode.FULL) {
-            options.inputFiles.writeResources(options).forEach { writeResult ->
-                logger.info("Writing patched resources for ${writeResult.apk} apk file")
+            options.apkBundle.writeResources(options).forEach { writeResult ->
+                if (writeResult.exception is Apk.ApkException.Write) return@forEach
+                logger.info("Patched resources written for ${writeResult.apk} apk file")
 
                 patchResults.add(PatcherResult.Patch.Split(writeResult.apk as Apk.Split))
             }
         }
 
-        with(options.inputFiles.base) {
+        with(options.apkBundle.base) {
             logger.info("Writing patched dex files")
             dexFiles = bytecodeData.writeDexFiles()
 
