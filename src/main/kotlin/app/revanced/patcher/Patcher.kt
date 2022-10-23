@@ -204,9 +204,7 @@ class Patcher(private val options: PatcherOptions) {
         // Necessary step to create a full base apk file
         // because Androlib does not support decoding and writing resources from split apk files yet
         with(options.apkBundle) {
-            splits?.forEach {
-                base.moveResources(it, options)
-            }
+            base.moveResources(this, options)
         }
 
         val patchResults = mutableListOf<PatcherResult.Patch>()

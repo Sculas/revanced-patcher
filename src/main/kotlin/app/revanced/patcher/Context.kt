@@ -69,7 +69,7 @@ class ResourceContext internal constructor(private val options: PatcherOptions) 
      * @param orContext The [Apk] file context to get the resource file in if it could not be found in the previous [context].
      * @return A [File] instance for the resource file.
      */
-    fun getFileOr(path: String, context: Apk = apkBundle.base, orContext: Apk = apkBundle.splits!!.library!!) =
+    fun getFileOr(path: String, context: Apk = apkBundle.base, orContext: Apk = apkBundle.split!!.library!!) =
         getFile(path, context).takeIf { it.exists() } ?: getFile(path, orContext)
 
     /**
@@ -88,7 +88,6 @@ class ResourceContext internal constructor(private val options: PatcherOptions) 
      */
     fun openEditor(path: String, context: Apk = apkBundle.base) =
         DomFileEditor(this@ResourceContext.getFile(path, context))
-
 }
 /**
  * Wrapper for a file that can be edited as a dom document.

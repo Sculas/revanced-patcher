@@ -6,11 +6,11 @@ import app.revanced.patcher.PatcherOptions
  * An [Apk] file of type [Apk.Split].
  *
  * @param base The apk file of type [Apk.Base].
- * @param splits The [Apk.Split] files.
+ * @param split The [Apk.Split] files.
  */
 data class ApkBundle(
     val base: Apk.Base,
-    val splits: Split? = null
+    val split: Split? = null
 ) {
 
     /**
@@ -20,17 +20,19 @@ data class ApkBundle(
      * @param asset The apk file of type [Apk.Base].
      * @param language The apk file of type [Apk.Base].
      */
-    data class Split(
-        val library: Apk.Split.Library? = null,
-        val asset: Apk.Split.Asset? = null,
-        val language: Apk.Split.Language? = null,
-    ) : Iterable<Apk.Split> {
-        private val splits = mutableListOf<Apk.Split>().also { splitsList ->
-            fun addNotNull(apk: Apk.Split?) = apk?.let { splitsList.add(apk) }
-            listOf(library, asset, language).forEach(::addNotNull)
-        }
+    class Split(
+        library: Apk.Split.Library,
+        asset: Apk.Split.Asset,
+        language: Apk.Split.Language
+    ) {
+        var library = library
+            internal set
+        var asset = asset
+            internal set
+        var language = language
+            internal set
 
-        override fun iterator() = splits.iterator()
+        val all get() = listOfNotNull(library, asset, language)
     }
 
     /**
@@ -45,8 +47,8 @@ data class ApkBundle(
             writeResources(options)
         }
 
-        splits?.forEach {
-            with(it) {
+        split?.all?.forEach { splitApk ->
+            with(splitApk) {
                 var exception: Apk.ApkException.Write? = null
 
                 try {
@@ -73,7 +75,7 @@ data class ApkBundle(
             decodeResources(options, mode)
         }
 
-        splits?.forEach {
+        split?.all?.forEach {
             yield(it)
             it.decodeResources(options, mode)
         }

@@ -2,6 +2,7 @@
 
 package app.revanced.patcher.apk
 
+import app.revanced.patcher.DomFileEditor
 import app.revanced.patcher.Patcher
 import app.revanced.patcher.PatcherOptions
 import app.revanced.patcher.extensions.nullOutputStream
@@ -26,8 +27,11 @@ import lanchon.multidexlib2.DexIO
 import lanchon.multidexlib2.MultiDexIO
 import org.jf.dexlib2.Opcodes
 import org.jf.dexlib2.writer.io.MemoryDataStore
+import org.w3c.dom.Element
 import java.io.File
 import java.nio.file.FileSystems
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import kotlin.io.path.copyTo
 
 /**
@@ -36,15 +40,6 @@ import kotlin.io.path.copyTo
  * @param filePath The path to the apk file.
  */
 sealed class Apk(filePath: String) {
-    /**
-     * Move resources from [apk] to the current [Apk] file.
-     *
-     * @param apk The [Apk] file to move resources from.
-     * @param options The [PatcherOptions] of the [Patcher].
-     */
-    internal open fun moveResources(apk: Apk, options: PatcherOptions): Unit =
-        throw UnsupportedOperationException("Cannot move resources from $this to $apk")
-
     /**
      * Get the resource directory of the apk file.
      *
@@ -183,23 +178,60 @@ sealed class Apk(filePath: String) {
 
         override fun toString() = "base"
 
-        override fun moveResources(apk: Apk, options: PatcherOptions) {
-            if (apk is Base) throw UnsupportedOperationException("Cannot move resources from $this to $apk")
+        /**
+         * Move resources from an [ApkBundle] to the [Base] [Apk] file.
+         *
+         * @param apkBundle The [ApkBundle] move resources from.
+         * @param options The [PatcherOptions] of the [Patcher].
+         */
+        internal fun moveResources(apkBundle: ApkBundle, options: PatcherOptions) {
+            val workDirectory = options.workDirectory.resolve("merged").also(File::mkdirs)
+            val workDirectoryPath = workDirectory.toPath()
 
-            val fromResourceDirectory = apk.getResourceDirectory(options)
-            val intoResourceDirectory = getResourceDirectory(options)
+            val toResourceDirectory = getResourceDirectory(options)
+            val toResourceDirectoryPath = toResourceDirectory.toPath()
 
-            when (apk) {
-                is Split.Asset -> {
-                    TODO("Move resources from asset split apk file to base apk file")
+            apkBundle.split?.let {
+                // remove isSplitRequired attribute
+                DomFileEditor(toResourceDirectory.resolve("AndroidManifest.xml")).use { editor ->
+                    val applicationNode = editor.file.getElementsByTagName("application").item(0) as Element
+                    applicationNode.removeAttribute("android:isSplitRequired")
                 }
-                is Split.Language -> {
-                    TODO("Move resources from language split apk file to base apk file")
+
+                // merge resources
+                it.all.onEach { split ->
+                    // move split resources to work directory
+                    Files.copy(
+                        split.getResourceDirectory(options).toPath(),
+                        workDirectoryPath,
+                        StandardCopyOption.REPLACE_EXISTING
+                    )
+                }.also {
+                    // move base resources to work directory and overwrite split resources
+                    Files.copy(
+                        toResourceDirectoryPath,
+                        workDirectoryPath,
+                        StandardCopyOption.REPLACE_EXISTING
+                    )
+                }.onEach { split ->
+                    // fix resource references
+                    when (split) {
+                        is Split.Asset,
+                        is Split.Language -> {
+                            TODO("Find APKTOOL_DUMMY references in base resources and replace them with the split resources")
+                        }
+                        is Split.Library -> {
+                            TODO("Find APKTOOL_DUMMY references in base resources and replace them with the split resources")
+                        }
+                    }
+                }.also {
+                    // move merged resources to base
+                    Files.move(
+                        workDirectoryPath,
+                        toResourceDirectoryPath,
+                        StandardCopyOption.REPLACE_EXISTING
+                    )
                 }
-                is Split.Library -> {
-                    TODO("Move resources from library split apk file to base apk file")
-                }
-                else -> throw Exception("Unreachable")
             }
         }
 
